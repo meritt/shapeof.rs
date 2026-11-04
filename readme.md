@@ -58,7 +58,7 @@ let inferred = try ShapeOf.schema(#"{"id": 1, "name": "Ада"}"#, for: .openai)
 
 ## Автор
 
-[Алексей Симоненко](https://github.com/meritt)
+[Алексей Симоненко](https://simonenko.xyz)
 
 ## Лицензия
 
