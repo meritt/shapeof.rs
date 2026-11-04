@@ -2,7 +2,7 @@
 import Foundation
 import PackageDescription
 
-let release: (url: String, checksum: String)? = nil
+let release: (url: String, checksum: String)? = (url: "https://github.com/meritt/shapeof.rs/releases/download/v0.1.0/shapeof-v0.1.0-xcframework.zip", checksum: "4e094b0f0836a80e7134282456c91dab9889a073e81da78fcbd4c60b1e504bf5")
 
 let local = "packages/swift/ShapeOfFFI.xcframework"
 let ffi: Target
