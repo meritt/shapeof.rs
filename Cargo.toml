@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+authors = ["Alexey Simonenko <alexey@simonenko.dev>"]
+repository = "https://github.com/meritt/shapeof.rs"
+publish = false
+
+[workspace.dependencies]
+shapeof-core = { path = "crates/shapeof-core" }
+ryu-js = "1.0.3"
+unicode-ident = "1.0.27"
+serde_json = "1"
+cbindgen = { version = "0.29.4", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+cast_possible_truncation = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.test]
+opt-level = 3

@@ -1,0 +1,4 @@
+module ShapeOfFFI {
+    header "shapeof.h"
+    export *
+}

@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_call:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    concurrency:
+      group: ci-test-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup
+        run: |
+          rustup toolchain install
+          declared="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          if [[ "$(rustc --version)" != "rustc $declared "* ]]; then
+            echo "::error::effective Rust version does not match rust-toolchain.toml"
+            exit 1
+          fi
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        env:
+          CARGO_BUILD_WARNINGS: deny
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked
+          cargo clippy -p shapeof-core -p shapeof-ffi --locked --target wasm32-unknown-unknown
+          cargo doc --workspace --no-deps --locked
+
+      - name: Policy
+        run: cargo xtask header --check
+
+      - name: Install
+        env:
+          CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          fetch() {
+            curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
+          }
+          mkdir -p "$RUNNER_TEMP/bin"
+          deny="$RUNNER_TEMP/cargo-deny.tar.gz"
+          fetch https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz "$deny"
+          echo "$CARGO_DENY_SHA256  $deny" | sha256sum -c - > /dev/null
+          tar -xzf "$deny" -C "$RUNNER_TEMP/bin" --strip-components 1 cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          leaks="$RUNNER_TEMP/gitleaks.tar.gz"
+          fetch https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz "$leaks"
+          echo "$GITLEAKS_SHA256  $leaks" | sha256sum -c - > /dev/null
+          tar -xzf "$leaks" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Audit
+        run: cargo deny --locked check
+
+      - name: Secrets
+        run: |
+          mkdir -p "$RUNNER_TEMP/source"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/source"
+          gitleaks dir --redact --no-banner --timeout 300 \
+            --max-target-megabytes 64 "$RUNNER_TEMP/source"
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Package
+        run: cargo package -p shapeof-core --locked
+
+      - name: Semver
+        run: |
+          baseline="$(git tag --list 'v*' --no-contains HEAD --sort=-version:refname | head -n 1)"
+          if [ -z "$baseline" ]; then
+            echo "no release to compare with"
+            exit 0
+          fi
+          cargo install --locked cargo-semver-checks@0.51.0 --root "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/cargo-semver-checks" semver-checks -p shapeof-core --baseline-rev "$baseline"
+
+      - name: Setup
+        env:
+          MIRI_TOOLCHAIN: nightly-2026-11-01
+        run: |
+          rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src
+          echo "MIRI_TOOLCHAIN=$MIRI_TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Soundness
+        run: cargo "+$MIRI_TOOLCHAIN" miri test -p shapeof-ffi --locked
+
+  build:
+    name: Build
+    runs-on: macos-26
+    timeout-minutes: 40
+    concurrency:
+      group: ci-build-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup
+        run: rustup toolchain install
+
+      - name: Setup
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        with:
+          working-directory: packages/npm
+          node-version-file: ../../.nvmrc
+          install: false
+
+      - name: Install
+        env:
+          BINARYEN_SHA256: ad66da82ac13f163e424b1643f16c6dfcccc98b5966296b43e52d3cab04f84a8
+        run: |
+          archive="$RUNNER_TEMP/binaryen.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$archive" \
+            https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-macos.tar.gz
+          echo "$BINARYEN_SHA256  $archive" | shasum -a 256 -c - > /dev/null
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
+
+      - name: Package
+        run: cargo xtask dist "$RUNNER_TEMP/release"
+
+      - name: Upload
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-set
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

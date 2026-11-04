@@ -1,0 +1,22 @@
+[package]
+name = "shapeof-core"
+description = "JSON Schema 2020-12 inferred from examples of JSON, JSON5-like text or JSON Lines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["json-schema", "json", "schema", "inference", "jsonl"]
+categories = ["encoding", "parser-implementations"]
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE"]
+
+[dependencies]
+ryu-js.workspace = true
+unicode-ident.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,102 @@
+{
+  "format": 1,
+  "cases": [
+    {
+      "name": "openai makes every property required",
+      "target": "openai",
+      "input": "[{\"id\": 1, \"name\": \"a\", \"tags\": []}, {\"id\": 2.5, \"tags\": [\"x\"], \"seen\": \"2026-10-27\"}]",
+      "want": {
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"id\": {\n      \"type\": \"number\"\n    },\n    \"name\": {\n      \"type\": [\"string\", \"null\"]\n    },\n    \"tags\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"seen\": {\n      \"type\": [\"string\", \"null\"],\n      \"format\": \"date\"\n    }\n  },\n  \"required\": [\"id\", \"name\", \"tags\", \"seen\"],\n  \"additionalProperties\": false\n}",
+        "notes": { "empty": [], "unions": 2, "optional": 0, "depth": 1, "properties": 4, "names": 14, "rootObject": true }
+      }
+    },
+    {
+      "name": "anthropic keeps optional properties and uri formats",
+      "target": "anthropic",
+      "input": "{\"a\": 1, \"b\": {\"c\": \"https://simonenko.xyz/\"}}\n{\"a\": null}",
+      "want": {
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"a\": {\n      \"type\": [\"integer\", \"null\"]\n    },\n    \"b\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"c\": {\n          \"type\": \"string\",\n          \"format\": \"uri\"\n        }\n      },\n      \"required\": [\"c\"],\n      \"additionalProperties\": false\n    }\n  },\n  \"required\": [\"a\"],\n  \"additionalProperties\": false\n}",
+        "notes": { "empty": [], "unions": 1, "optional": 1, "depth": 2, "properties": 3, "names": 3, "rootObject": true }
+      }
+    },
+    {
+      "name": "anthropic writes mixed types as anyOf",
+      "target": "anthropic",
+      "input": "[{\"v\": 1}, {\"v\": \"x\"}, {\"v\": {\"w\": true}}, {\"v\": [1]}]",
+      "want": {
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"v\": {\n      \"anyOf\": [\n        {\n          \"type\": \"object\",\n          \"properties\": {\n            \"w\": {\n              \"type\": \"boolean\"\n            }\n          },\n          \"required\": [\"w\"],\n          \"additionalProperties\": false\n        },\n        {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"integer\"\n          }\n        },\n        {\n          \"type\": [\"string\", \"integer\"]\n        }\n      ]\n    }\n  },\n  \"required\": [\"v\"],\n  \"additionalProperties\": false\n}",
+        "notes": { "empty": [], "unions": 1, "optional": 0, "depth": 2, "properties": 2, "names": 2, "rootObject": true }
+      }
+    },
+    {
+      "name": "anthropic reports empty arrays by path",
+      "target": "anthropic",
+      "input": "{\"a\": {\"b\": []}, \"c\": [[]]}",
+      "want": {
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"a\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"b\": {\n          \"type\": \"array\",\n          \"items\": {}\n        }\n      },\n      \"required\": [\"b\"],\n      \"additionalProperties\": false\n    },\n    \"c\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"array\",\n        \"items\": {}\n      }\n    }\n  },\n  \"required\": [\"a\", \"c\"],\n  \"additionalProperties\": false\n}",
+        "notes": { "empty": [["a", "b", "[]"], ["c", "[]", "[]"]], "unions": 0, "optional": 0, "depth": 2, "properties": 3, "names": 3, "rootObject": true }
+      }
+    },
+    {
+      "name": "plain keeps a list root",
+      "target": "plain",
+      "input": "[{\"a\": 1}, {\"a\": 2}]",
+      "want": {
+        "schema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"array\",\n  \"items\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"a\": {\n        \"type\": \"integer\"\n      }\n    },\n    \"required\": [\"a\"]\n  }\n}",
+        "notes": { "empty": [], "unions": 0, "optional": 0, "depth": 2, "properties": 1, "names": 1, "rootObject": false }
+      }
+    },
+    {
+      "name": "plain reads loose JSON pasted from code",
+      "target": "plain",
+      "input": "{a: 'x', b: [1, 2.5,], // c\n c: undefined, d: NaN, e: 0x10};",
+      "want": {
+        "schema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"a\": {\n      \"type\": \"string\"\n    },\n    \"b\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"number\"\n      }\n    },\n    \"c\": {\n      \"type\": \"null\"\n    },\n    \"d\": {\n      \"type\": \"number\"\n    },\n    \"e\": {\n      \"type\": \"integer\"\n    }\n  },\n  \"required\": [\"a\", \"b\", \"c\", \"d\", \"e\"]\n}",
+        "notes": { "empty": [], "unions": 0, "optional": 0, "depth": 1, "properties": 5, "names": 5, "rootObject": true }
+      }
+    },
+    {
+      "name": "plain recognises string formats",
+      "target": "plain",
+      "input": "{\"id\": \"0b5c2a8e-7f1d-4c3e-9a6b-2d4f8e1c7a90\", \"mail\": \"me@mail.ru\", \"ip\": \"192.168.0.1\", \"at\": \"10:00:00Z\"}",
+      "want": {
+        "schema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"id\": {\n      \"type\": \"string\",\n      \"format\": \"uuid\"\n    },\n    \"mail\": {\n      \"type\": \"string\",\n      \"format\": \"email\"\n    },\n    \"ip\": {\n      \"type\": \"string\",\n      \"format\": \"ipv4\"\n    },\n    \"at\": {\n      \"type\": \"string\",\n      \"format\": \"time\"\n    }\n  },\n  \"required\": [\"id\", \"mail\", \"ip\", \"at\"]\n}",
+        "notes": { "empty": [], "unions": 0, "optional": 0, "depth": 1, "properties": 4, "names": 10, "rootObject": true }
+      }
+    },
+    {
+      "name": "a scalar root is not an object",
+      "target": "openai",
+      "input": "\"text\"",
+      "want": {
+        "schema": "{\n  \"type\": \"string\"\n}",
+        "notes": { "empty": [], "unions": 0, "optional": 0, "depth": 0, "properties": 0, "names": 0, "rootObject": false }
+      }
+    },
+    {
+      "name": "a missing colon",
+      "target": "openai",
+      "input": "{\"a\" 1}",
+      "want": { "error": { "reason": "ожидалось двоеточие после имени свойства", "line": 1, "column": 6, "source": "{\"a\" 1}" } }
+    },
+    {
+      "name": "a broken line of JSON Lines",
+      "target": "openai",
+      "input": "{\"a\": 1}\n{\"a\": }",
+      "want": {
+        "error": {
+          "reason": "ожидалось значение: строка, число, объект, массив, true, false или null",
+          "line": 2,
+          "column": 7,
+          "source": "{\"a\": }"
+        }
+      }
+    },
+    {
+      "name": "nesting deeper than the limit",
+      "target": "plain",
+      "input": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "want": { "error": "depth" }
+    }
+  ]
+}

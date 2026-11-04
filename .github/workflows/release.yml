@@ -1,0 +1,243 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Identity
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+    env:
+      REF: ${{ github.ref_name }}
+      EVENT_COMMIT: ${{ github.sha }}
+      WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Identity
+        id: identity
+        run: |
+          if [[ ! "$REF" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::release ref is not a canonical vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          source_commit="$(git rev-parse "refs/tags/$REF^{commit}")"
+          main_commit="$(git rev-parse 'refs/remotes/origin/main^{commit}')"
+          if [ "$source_commit" != "$(git rev-parse 'HEAD^{commit}')" ] ||
+             [ "$source_commit" != "$(git rev-parse "$EVENT_COMMIT^{commit}")" ] ||
+             [ "$source_commit" != "$WORKFLOW_COMMIT" ] ||
+             ! git merge-base --is-ancestor "$source_commit" "$main_commit"; then
+            echo "::error::tag, source, workflow, or protected main identity differs"
+            exit 1
+          fi
+          declared="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          packaged="$(jq -r .version packages/npm/package.json)"
+          if [ "v$declared" != "$REF" ] || [ "$packaged" != "$declared" ]; then
+            echo "::error::release ref, workspace version and npm package version differ"
+            exit 1
+          fi
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+
+  gates:
+    name: Gates
+    needs: identity
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build
+    needs:
+      - identity
+      - gates
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      sums_sha256: ${{ steps.package.outputs.sums_sha256 }}
+      manifest_sha256: ${{ steps.package.outputs.manifest_sha256 }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup
+        run: rustup toolchain install
+
+      - name: Setup
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        with:
+          working-directory: packages/npm
+          node-version-file: ../../.nvmrc
+          install: false
+
+      - name: Install
+        env:
+          BINARYEN_SHA256: ad66da82ac13f163e424b1643f16c6dfcccc98b5966296b43e52d3cab04f84a8
+        run: |
+          archive="$RUNNER_TEMP/binaryen.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$archive" \
+            https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-macos.tar.gz
+          echo "$BINARYEN_SHA256  $archive" | shasum -a 256 -c - > /dev/null
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
+
+      - name: Package
+        id: package
+        run: |
+          cargo xtask dist "$RUNNER_TEMP/release"
+          cargo xtask pin --check "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release"
+          printf 'sums_sha256=%s\nmanifest_sha256=%s\n' \
+            "$(shasum -a 256 SHA256SUMS | cut -d ' ' -f 1)" \
+            "$(shasum -a 256 release-manifest.json | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish
+    needs:
+      - identity
+      - build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: write
+    env:
+      REF: ${{ github.ref_name }}
+      SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
+      SUMS_SHA256: ${{ needs.build.outputs.sums_sha256 }}
+      MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-build
+          path: release-input
+
+      - name: Verify
+        working-directory: release-input
+        run: |
+          if [ "$(sha256sum SHA256SUMS | cut -d ' ' -f 1)" != "$SUMS_SHA256" ] ||
+             [ "$(sha256sum release-manifest.json | cut -d ' ' -f 1)" != "$MANIFEST_SHA256" ]; then
+            echo "::error::publication input is not the exact built set"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
+          if [ "$(ls | wc -l)" -ne "$(( $(wc -l < SHA256SUMS) + 2 ))" ]; then
+            echo "::error::publication input holds files other than the built set"
+            exit 1
+          fi
+
+      - name: Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$REF" --repo "$REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::release already exists; refusing to overwrite it"
+            exit 1
+          fi
+          gh release create "$REF" --repo "$REPOSITORY" --verify-tag \
+            --target "$SOURCE_COMMIT" --draft --title "$REF" --notes ""
+
+      - name: Readback
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t assets < <(cut -d ' ' -f 3 release-input/SHA256SUMS)
+          assets+=(SHA256SUMS release-manifest.json)
+          (cd release-input && gh release upload "$REF" --repo "$REPOSITORY" "${assets[@]}")
+          mkdir -p readback
+          for asset in "${assets[@]}"; do
+            gh release download "$REF" --repo "$REPOSITORY" --dir readback --pattern "$asset"
+            cmp "release-input/$asset" "readback/$asset"
+          done
+          if [ "$(gh release view "$REF" --repo "$REPOSITORY" --json assets --jq '.assets | length')" -ne "${#assets[@]}" ]; then
+            echo "::error::release holds assets other than the built set"
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$REF" --repo "$REPOSITORY" --draft=false --latest
+
+  immutability:
+    name: Immutability
+    needs:
+      - build
+      - publish
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+      contents: read
+    env:
+      REF: ${{ github.ref_name }}
+      SUMS_SHA256: ${{ needs.build.outputs.sums_sha256 }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$REF" --repo "$REPOSITORY" --dir "$RUNNER_TEMP/release"
+
+      - name: Verify
+        working-directory: ${{ runner.temp }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(sha256sum SHA256SUMS | cut -d ' ' -f 1)" != "$SUMS_SHA256" ]; then
+            echo "::error::published release identity differs"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
+          for attempt in {1..30}; do
+            if gh release verify "$REF" --repo "$REPOSITORY"; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::release attestation for $REF was not available after 30 attempts"
+              exit 1
+            fi
+            sleep 2
+          done
+          for asset in *; do
+            gh release verify-asset "$REF" "$asset" --repo "$REPOSITORY"
+          done
